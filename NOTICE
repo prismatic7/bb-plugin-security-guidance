@@ -1,0 +1,28 @@
+bb-plugin-security-guidance
+============================
+
+This plugin includes work originally published in the
+claude-plugins-official repository by Anthropic, PBC., licensed under the
+Apache License, Version 2.0.
+
+    Source:    https://github.com/anthropics/claude-plugins-official
+    Subpath:   plugins/security-guidance/hooks/patterns.py
+    Commit:    0bde168 (2026-05-26)
+    License:   Apache License 2.0 (see LICENSE in this directory)
+
+Forked content
+--------------
+
+The file patterns.ts in this directory is a faithful TypeScript port of the
+upstream patterns.py at the commit above. The pattern data — 25 regex/
+substring rules covering unsafe deserialization, command injection, XSS
+sinks, crypto footguns, XXE, GitHub Actions injection, and TLS-verification
+disablement — is unmodified in substance.
+
+Original work
+-------------
+
+The BB-side plugin glue code (server.ts, package.json, README.md) is
+original work by prismatic7 and is licensed under the MIT License that
+applies to the rest of this repository, except where it imports from
+patterns.ts — that import does not change the license of either file.
