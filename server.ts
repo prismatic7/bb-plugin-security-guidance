@@ -36,7 +36,13 @@ export default async function plugin(bb: BbPluginApi) {
     },
   });
 
-  const { mode } = await settings.get();
+  let { mode } = await settings.get();
+
+  // Re-read settings on change without a plugin reload.
+  settings.onChange((next) => {
+    mode = next.mode;
+    bb.log.info(`[security-guidance] mode updated → ${mode}`);
+  });
 
   bb.agents.registerTool({
     name: "security_scan",
