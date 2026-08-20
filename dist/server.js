@@ -14730,7 +14730,11 @@ async function plugin(bb) {
       description: "warn: returns warnings for the agent to act on. block: returns a refusal message when patterns match."
     }
   });
-  const { mode } = await settings.get();
+  let { mode } = await settings.get();
+  settings.onChange((next) => {
+    mode = next.mode;
+    bb.log.info(`[security-guidance] mode updated \u2192 ${mode}`);
+  });
   bb.agents.registerTool({
     name: "security_scan",
     description: "Scan code content for known-dangerous security patterns (pickle.load, yaml.load, eval(, os.system, subprocess shell=True, dangerouslySetInnerHTML, verify=False, ECB mode, GitHub Actions injection, torch.load without weights_only=True, XXE-prone XML parsers, and more). Call this on content you are about to write to a file. Returns a warning block for every pattern matched. Pattern matches can be false positives \u2014 if the construct is safe in context, document why in a comment and continue; otherwise fix the code before writing it.",
