@@ -85,16 +85,21 @@ jobs:
           else
             npm install --no-audit --no-fund
           fi
-      - name: Node checks
+      # Run only the scripts the repo actually declares: pnpm and yarn have no
+      # --if-present, and a workspace package often needs its build before its
+      # tests resolve (MASA's tests import the built package).
+      - name: Node build and test
         if: hashFiles('package.json') != ''
         run: |
-          if [ -f pnpm-lock.yaml ]; then
-            pnpm test
-          elif [ -f yarn.lock ]; then
-            yarn test
-          else
-            npm run lint --if-present && npm test --if-present
+          has() { node -e "const s=require('./package.json').scripts||{}; process.exit(s['$1']?0:1)"; }
+          if [ -f pnpm-lock.yaml ]; then PM=pnpm
+          elif [ -f yarn.lock ]; then PM=yarn
+          else PM=npm
           fi
+          if has lint;  then $PM run lint;  fi
+          if has build; then $PM run build; fi
+          if has test;  then $PM test;      fi
+          echo "node lane done"
 
       - name: Rust toolchain
         if: hashFiles('Cargo.toml') != ''
