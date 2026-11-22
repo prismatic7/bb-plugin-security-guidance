@@ -1,0 +1,113 @@
+name: CI
+
+# Emitted by agent-dispatch bin/repo-bootstrap.sh. Stack-guarded, not
+# stack-detected: a step runs only when the manifest it needs is present.
+
+on:
+  push:
+  pull_request:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  lint-workflows:
+    name: Lint workflows and shell
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+      - name: actionlint
+        uses: raven-actions/actionlint@v2
+      - name: shellcheck
+        if: hashFiles('**/*.sh') != ''
+        uses: ludeeus/action-shellcheck@2.0.0
+        with:
+          severity: warning
+
+  test:
+    name: Test
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+
+      # Python — uv when the lock exists, pip otherwise.
+      - name: Set up uv
+        if: hashFiles('uv.lock') != ''
+        uses: astral-sh/setup-uv@v7
+      - name: Python deps (uv)
+        if: hashFiles('uv.lock') != ''
+        run: uv sync --frozen
+      - name: Python tests (uv)
+        if: hashFiles('uv.lock') != '' && hashFiles('tests/**', 'test/**') != ''
+        run: uv run pytest -q
+      - name: Set up Python
+        if: hashFiles('uv.lock') == '' && hashFiles('pyproject.toml', 'requirements.txt') != ''
+        uses: actions/setup-python@v7
+        with:
+          python-version: "3.12"
+      - name: Python deps (pip)
+        if: hashFiles('uv.lock') == '' && hashFiles('pyproject.toml', 'requirements.txt') != ''
+        run: |
+          python -m pip install --upgrade pip
+          if [ -f pyproject.toml ]; then python -m pip install -e .; fi
+          if [ -f requirements.txt ]; then python -m pip install -r requirements.txt; fi
+      - name: Python tests (pip)
+        if: hashFiles('uv.lock') == '' && hashFiles('tests/**', 'test/**') != ''
+        run: python -m pytest -q
+
+      # Node — npm only. A pnpm/yarn repo should replace this step.
+      - name: Set up Node
+        if: hashFiles('package.json') != ''
+        uses: actions/setup-node@v7
+        with:
+          node-version: "22"
+      - name: Node deps
+        if: hashFiles('package.json') != ''
+        run: |
+          if [ -f package-lock.json ]; then npm ci --no-audit --no-fund
+          else npm install --no-audit --no-fund
+          fi
+      - name: Node checks
+        if: hashFiles('package.json') != ''
+        run: |
+          npm run lint --if-present
+          npm test --if-present
+
+      - name: Rust toolchain
+        if: hashFiles('Cargo.toml') != ''
+        uses: dtolnay/rust-toolchain@stable
+      - name: Cargo test
+        if: hashFiles('Cargo.toml') != ''
+        run: cargo test --all-features --locked || cargo test --all-features
+
+      - name: Set up Go
+        if: hashFiles('go.mod') != ''
+        uses: actions/setup-go@v7
+        with:
+          go-version-file: go.mod
+      - name: Go build and test
+        if: hashFiles('go.mod') != ''
+        run: go build ./... && go test ./...
+
+  # Dependency review needs the dependency-graph API, which is Forbidden on a
+  # private repo without GitHub Advanced Security — it would red every PR. Public
+  # repos get it free; a private repo with GHAS can drop the visibility guard.
+  dependency-review:
+    name: Dependency review
+    if: github.event_name == 'pull_request' && !github.event.repository.private
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+      - uses: actions/dependency-review-action@v5.0.1
+        with:
+          fail-on-severity: high
