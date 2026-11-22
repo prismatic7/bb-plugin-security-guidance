@@ -63,7 +63,9 @@ jobs:
         if: hashFiles('uv.lock') == '' && hashFiles('tests/**', 'test/**') != ''
         run: python -m pytest -q
 
-      # Node — npm only. A pnpm/yarn repo should replace this step.
+      # Node — the package manager is inferred from the lockfile. npm ci fails on
+      # a pnpm workspace (EUNSUPPORTEDPROTOCOL: workspace:*), so guessing wrong
+      # reds the repo.
       - name: Set up Node
         if: hashFiles('package.json') != ''
         uses: actions/setup-node@v7
@@ -72,14 +74,25 @@ jobs:
       - name: Node deps
         if: hashFiles('package.json') != ''
         run: |
-          if [ -f package-lock.json ]; then npm ci --no-audit --no-fund
-          else npm install --no-audit --no-fund
+          if [ -f pnpm-lock.yaml ]; then
+            corepack enable && pnpm install --frozen-lockfile
+          elif [ -f yarn.lock ]; then
+            corepack enable && yarn install --immutable
+          elif [ -f package-lock.json ]; then
+            npm ci --no-audit --no-fund
+          else
+            npm install --no-audit --no-fund
           fi
       - name: Node checks
         if: hashFiles('package.json') != ''
         run: |
-          npm run lint --if-present
-          npm test --if-present
+          if [ -f pnpm-lock.yaml ]; then
+            pnpm run lint --if-present && pnpm test
+          elif [ -f yarn.lock ]; then
+            yarn test
+          else
+            npm run lint --if-present && npm test --if-present
+          fi
 
       - name: Rust toolchain
         if: hashFiles('Cargo.toml') != ''
