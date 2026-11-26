@@ -1,10 +1,12 @@
 // security-guidance patterns — ported from Anthropic's claude-plugins-official
-// (plugins/security-guidance/hooks/patterns.py, commit 0bde168, 2026-05-26),
+// (plugins/security-guidance/hooks/patterns.py, commit fce198c, 2026-11-23),
 // Apache-2.0. See LICENSE and NOTICE.
 //
 // Each rule matches content (and optionally a path) and carries a reminder.
 // Ported faithfully from the Python original; regexes are JS-compatible
-// equivalents of the Python patterns.
+// equivalents of the Python patterns. Where the original reads a call's own
+// arguments (rather than one line), the rule carries a `test` that walks the
+// call the same way — see callArgs().
 
 export interface SecurityRule {
   ruleName: string;
@@ -17,6 +19,8 @@ export interface SecurityRule {
   substrings?: string[];
   /** Regex (slow path). */
   regex?: RegExp;
+  /** Argument-aware matcher; used instead of substrings/regex when present. */
+  test?: (content: string) => boolean;
 }
 
 const JS_EXTS = [".js", ".jsx", ".ts", ".tsx", ".mjs", ".cjs", ".mts", ".cts", ".vue", ".svelte"];
@@ -25,8 +29,81 @@ const DOC_EXTS = [".md", ".mdx", ".txt", ".rst", ".json", ".yaml", ".yml"];
 
 const endsWithAny = (p: string, exts: string[]) => exts.some((e) => p.endsWith(e));
 
+// ─── Call-argument reader ─────────────────────────────────────────────
+//
+// Port of upstream's _call_args(): read a call's arguments from just after its
+// "(", stepping over strings, comments and nested brackets as units, across
+// lines. Text that follows the call is not read as an argument of it, and text
+// inside a nested call is not mistaken for this one's. Every scan is bounded.
+
+const MAX_ARGS = 4000;
+
+/** Arguments of the call whose "(" sits at `open`, or "" if it never closes. */
+export function callArgs(content: string, open: number): string {
+  let depth = 1;
+  let i = open + 1;
+  const limit = Math.min(content.length, open + MAX_ARGS);
+  while (i < limit) {
+    const ch = content[i];
+    if (ch === '"' || ch === "'" || ch === "`") {
+      const quote = ch;
+      i++;
+      while (i < limit) {
+        if (content[i] === "\\") {
+          i += 2;
+          continue;
+        }
+        if (content[i] === quote) {
+          i++;
+          break;
+        }
+        i++;
+      }
+      continue;
+    }
+    if (ch === "#") {
+      while (i < limit && content[i] !== "\n") i++;
+      continue;
+    }
+    if (ch === "(") depth++;
+    else if (ch === ")") {
+      depth--;
+      if (depth === 0) return content.slice(open + 1, i);
+    }
+    i++;
+  }
+  return "";
+}
+
+/** True when the `eval(` at `evalIndex` is Playwright/Puppeteer page.$eval:
+ *  a selector string, then a function. Nothing is evaluated from a string, so
+ *  upstream leaves it out. Mirrors _page_function_call(). */
+export function isPageFunctionEval(content: string, evalIndex: number): boolean {
+  if (evalIndex === 0 || content[evalIndex - 1] !== "$") return false;
+  const args = callArgs(content, evalIndex + 4).trimStart();
+  const selector = /^(?:"[^"\\\n]{0,300}"|'[^'\\\n]{0,300}'|`[^`$\\]{0,300}`)\s*,\s*/;
+  const m = selector.exec(args);
+  if (!m) return false;
+  const rest = args.slice(m[0].length);
+  return /^(?:async\s+)?(?:function\b|(?:[\w$]{1,60}|\([^()]{0,200}\))\s{0,20}(?::[^=\n]{0,60})?=>)/.test(
+    rest
+  );
+}
+
+/** Every match of `re` in `content`, as {index, text} pairs. */
+function findAll(content: string, re: RegExp): Array<{ index: number; text: string }> {
+  const out: Array<{ index: number; text: string }> = [];
+  const g = new RegExp(re.source, re.flags.includes("g") ? re.flags : re.flags + "g");
+  let m: RegExpExecArray | null;
+  while ((m = g.exec(content)) !== null) {
+    out.push({ index: m.index, text: m[0] });
+    if (m.index === g.lastIndex) g.lastIndex++;
+  }
+  return out;
+}
+
 const UNSAFE_DESERIALIZATION_REMINDER =
-  "⚠️ Security Warning: Loading pickle data (or equivalents: cPickle, cloudpickle, dill, marshal, shelve, joblib, pandas.read_pickle, numpy with allow_pickle=True) from untrusted sources allows arbitrary code execution.\n\n" +
+  "⚠️ Security Warning: Loading pickle data (or equivalents: cPickle, cloudpickle, dill, the standard library's .pyc serializer and its load()/loads(), shelve, joblib, pandas.read_pickle, numpy with allow_pickle=True) from untrusted sources allows arbitrary code execution.\n\n" +
   "For simple data, prefer JSON or msgspec. For typed objects, prefer a schema-validated deserializer (msgspec.Struct, pydantic, marshmallow) that constructs only declared types.\n\n" +
   "If this is safe or is explicitly needed, briefly document that in a comment before continuing.";
 
@@ -68,32 +145,50 @@ export const SECURITY_PATTERNS: SecurityRule[] = [
   },
   {
     ruleName: "new_function_injection",
-    substrings: ["new Function"],
+    // JS-only construct: gate to JS/TS files so docs/.md and other prose
+    // mentioning "new Function" don't trip the warning.
+    pathFilter: (p) => endsWithAny(p, JS_EXTS),
+    // The whole word: `new FunctionRegistry()` is another class. The two names
+    // code gives to Function itself still count.
+    regex: /new Function(?:Constructor|Ctor)?(?![\w$])/,
     reminder:
       "⚠️ Security Warning: Using new Function() with string interpolation is a CODE INJECTION vulnerability. If any variable is concatenated or interpolated into the function body string, an attacker controlling that variable can execute arbitrary code. Use safe alternatives: for property access use obj[key] or array.reduce((o, k) => o[k], root); for computation use a safe expression parser. NEVER interpolate untrusted strings into new Function() bodies.",
   },
   {
     ruleName: "eval_injection",
+    // Lookbehind excludes `.` so method calls like PyTorch model.eval(),
+    // redis.eval(), spec.eval() don't match. Playwright's page.$eval('selector',
+    // function) is left out too. Skip doc/prose files.
     pathFilter: (p) => !endsWithAny(p, DOC_EXTS),
-    regex: /(?<![a-zA-Z0-9_.])eval\(/,
+    test: (content) =>
+      findAll(content, /(?<![a-zA-Z0-9_.])eval\(/).some(
+        (m) => !isPageFunctionEval(content, m.index)
+      ),
     reminder:
       "⚠️ Security Warning: eval() executes arbitrary code and is a major security risk. Use JSON.parse() for data, ast.literal_eval() for Python literals, or a safe expression parser. If this is safe or is explicitly needed, briefly document that in a comment before continuing.",
   },
   {
     ruleName: "react_dangerously_set_html",
+    // JS/TS-only (React); gate so .md docs / .py / .go files don't trip.
+    pathFilter: (p) => endsWithAny(p, JS_EXTS),
     substrings: ["dangerouslySetInnerHTML"],
     reminder:
       "⚠️ Security Warning: dangerouslySetInnerHTML can lead to XSS vulnerabilities if used with untrusted content. Ensure all content is properly sanitized using an HTML sanitizer library like DOMPurify, or use safe alternatives.",
   },
   {
     ruleName: "document_write_xss",
+    // Browser DOM API: only meaningful in JS/TS source.
+    pathFilter: (p) => endsWithAny(p, JS_EXTS),
     substrings: ["document.write"],
     reminder:
       "⚠️ Security Warning: document.write() can be exploited for XSS attacks and has performance issues. Use DOM manipulation methods like createElement() and appendChild() instead.",
   },
   {
     ruleName: "innerHTML_xss",
-    substrings: [".innerHTML =", ".innerHTML="],
+    // Browser DOM API: only meaningful in JS/TS source. An assignment, not a
+    // `==` or `===` comparison.
+    pathFilter: (p) => endsWithAny(p, JS_EXTS),
+    regex: /\.innerHTML ?=(?!=)/,
     reminder:
       "⚠️ Security Warning: Setting innerHTML with untrusted content can lead to XSS vulnerabilities. Use textContent for plain text or safe DOM methods for HTML content. If you need HTML support, consider using an HTML sanitizer library such as DOMPurify.",
   },
@@ -132,7 +227,13 @@ export const SECURITY_PATTERNS: SecurityRule[] = [
   },
   {
     ruleName: "unsafe_yaml_load",
-    regex: /\byaml\.load\s*\((?![^)\n]{0,80}\bSafe)/,
+    // Suppressed by SafeLoader or CSafeLoader among the call's own arguments.
+    test: (content) =>
+      findAll(content, /\byaml\.load\s*\(/).some((m) => {
+        const args = callArgs(content, m.index + m.text.length - 1);
+        const firstLine = args.split("\n")[0] ?? "";
+        return !(/\bC?Safe\b/.test(firstLine.slice(0, 80)) || /\bC?SafeLoader\b/.test(args));
+      }),
     reminder: UNSAFE_YAML_LOAD_REMINDER,
   },
   {
@@ -178,12 +279,16 @@ export const SECURITY_PATTERNS: SecurityRule[] = [
   },
   {
     ruleName: "outerHTML_xss",
-    substrings: [".outerHTML =", ".outerHTML="],
+    // Browser DOM API: only meaningful in JS/TS source.
+    pathFilter: (p) => endsWithAny(p, JS_EXTS),
+    regex: /\.outerHTML ?=(?!=)/,
     reminder:
       "⚠️ Security Warning: Use textContent or sanitize with DOMPurify. outerHTML assignment is an XSS sink equivalent to innerHTML.",
   },
   {
     ruleName: "insertAdjacentHTML_xss",
+    // Browser DOM API: only meaningful in JS/TS source.
+    pathFilter: (p) => endsWithAny(p, JS_EXTS),
     substrings: [".insertAdjacentHTML("],
     reminder:
       "⚠️ Security Warning: Use insertAdjacentText() or sanitize with DOMPurify. insertAdjacentHTML is an XSS sink.",
@@ -197,7 +302,17 @@ export const SECURITY_PATTERNS: SecurityRule[] = [
   },
   {
     ruleName: "torch_unsafe_load",
-    regex: /(?:\btorch\.load|\.torch_load)\s*\((?![^)\n]{0,200}weights_only\s*=\s*True)/,
+    // Suppressed by weights_only=True among the call's own arguments.
+    // weights_only=False still triggers.
+    test: (content) =>
+      findAll(content, /(?:\btorch\.load|\.torch_load)\s*\(/).some((m) => {
+        const args = callArgs(content, m.index + m.text.length - 1);
+        const firstLine = args.split("\n")[0] ?? "";
+        return !(
+          /weights_only\s*=\s*True/.test(firstLine.slice(0, 200)) ||
+          /\bweights_only\s*=\s*True/.test(args)
+        );
+      }),
     reminder: UNSAFE_TORCH_LOAD_REMINDER,
   },
   {
@@ -207,8 +322,18 @@ export const SECURITY_PATTERNS: SecurityRule[] = [
   },
   {
     ruleName: "pickle_wrapper_load",
-    regex:
-      /\bjoblib\.load\s*\(|\b(?:pd|pandas)\.read_pickle\s*\(|\.cloudpickle_load\s*\(|\b(?:np|numpy)\.load\s*\([^)\n]{0,200}allow_pickle\s*=\s*True/,
+    // Library APIs that unpickle without saying "pickle". numpy.load only triggers
+    // when allow_pickle=True is explicit (defaults to False since numpy 1.16.3).
+    test: (content) =>
+      /\bjoblib\.load\s*\(|\b(?:pd|pandas)\.read_pickle\s*\(|\.cloudpickle_load\s*\(/.test(content) ||
+      findAll(content, /\b(?:np|numpy)\.load\s*\(/).some((m) => {
+        const args = callArgs(content, m.index + m.text.length - 1);
+        const firstLine = args.split("\n")[0] ?? "";
+        return (
+          /allow_pickle\s*=\s*True/.test(firstLine.slice(0, 200)) ||
+          /\ballow_pickle\s*=\s*True/.test(args)
+        );
+      }),
     reminder: UNSAFE_DESERIALIZATION_REMINDER,
   },
 ];
@@ -245,7 +370,13 @@ export function scanContent(path: string, content: string): Finding[] {
       }
     }
     let matched = false;
-    if (rule.substrings) {
+    if (rule.test) {
+      try {
+        matched = rule.test(content);
+      } catch {
+        matched = false;
+      }
+    } else if (rule.substrings) {
       for (const sub of rule.substrings) {
         if (content.includes(sub)) {
           matched = true;

@@ -57,12 +57,23 @@ about to write to a file.
 |---|---|---|
 | `mode` | `warn` | `warn`: returns warnings for the agent to act on. `block`: returns a refusal message when patterns match. |
 
+## Development
+
+```sh
+npm install
+npm run build      # tsc typecheck (noEmit)
+npm test           # behaviour tests for the pattern set
+npm run bundle     # bb plugin build → dist/
+```
+
 ## Attribution and licensing
 
 - `patterns.ts` is a faithful port of the pattern data from
   [`anthropics/claude-plugins-official`](https://github.com/anthropics/claude-plugins-official/tree/main/plugins/security-guidance/hooks)
-  (commit `0bde168`, 2026-05-26), licensed under the
+  (commit `fce198c`, 2026-11-23), licensed under the
   [Apache License 2.0](./LICENSE). See [NOTICE](./NOTICE) for the full
-  attribution.
+  attribution. The port includes upstream's argument-aware matching: a call's
+  own arguments are read across lines and nested brackets, so a `SafeLoader`
+  or `weights_only=True` anywhere inside the call suppresses the warning.
 - `server.ts`, `package.json`, and `README.md` are original work by
   prismatic7, MIT-licensed.

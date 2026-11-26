@@ -7,17 +7,28 @@ Apache License, Version 2.0.
 
     Source:    https://github.com/anthropics/claude-plugins-official
     Subpath:   plugins/security-guidance/hooks/patterns.py
-    Commit:    0bde168 (2026-05-26)
+    Commit:    fce198c (2026-11-23)
     License:   Apache License 2.0 (see LICENSE in this directory)
 
 Forked content
 --------------
 
 The file patterns.ts in this directory is a faithful TypeScript port of the
-upstream patterns.py at the commit above. The pattern data — 25 regex/
-substring rules covering unsafe deserialization, command injection, XSS
-sinks, crypto footguns, XXE, GitHub Actions injection, and TLS-verification
-disablement — is unmodified in substance.
+upstream patterns.py at the commit above. The pattern data — 25 regex,
+substring and argument-aware rules covering unsafe deserialization, command
+injection, XSS sinks, crypto footguns, XXE, GitHub Actions injection, and
+TLS-verification disablement — is unmodified in substance.
+
+Three upstream refinements are carried across in the port:
+
+- Browser DOM rules (innerHTML, outerHTML, insertAdjacentHTML,
+  dangerouslySetInnerHTML, document.write) and `new Function` only fire in
+  JS/TS files.
+- `eval()` skips Playwright/Puppeteer `page.$eval('selector', function)`,
+  which runs the function rather than evaluating a string.
+- `yaml.load`, `torch.load` and `numpy.load` read their own arguments across
+  lines and nested brackets, so a `SafeLoader` / `weights_only=True` /
+  `allow_pickle=True` further into the call is seen (upstream's `_call_args`).
 
 Original work
 -------------
