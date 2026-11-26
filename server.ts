@@ -18,9 +18,16 @@
 // Same warn-by-default philosophy as the Hermes original: the scan is
 // advisory, not blocking. Pattern matching has a non-trivial false-positive
 // rate, so the tool returns warnings rather than refusing anything.
+//
+//   - `gate_check` — the same engine behind an episteme-shaped verdict:
+//     STOP / REVISE / PROCEED, with a certainty, the evidence and the
+//     counterfactual (what would change the verdict). A documented
+//     justification yields PROCEED_DOCUMENTED and is carried in the verdict.
+//     See gate.ts for why this cannot be enforcement.
 import { type BbPluginApi } from "@get-bb/plugin-sdk";
 import { z } from "zod";
 import { scanContent, formatWarningBlock } from "./patterns";
+import { gate, renderVerdict } from "./gate.ts";
 
 export default async function plugin(bb: BbPluginApi) {
   bb.log.info("bb-plugin-security-guidance loaded");
@@ -73,6 +80,31 @@ export default async function plugin(bb: BbPluginApi) {
         );
       }
       return formatWarningBlock(findings);
+    },
+  });
+
+  bb.agents.registerTool({
+    name: "gate_check",
+    description:
+      "Judge content before you write it. Returns STOP, REVISE or PROCEED with a certainty, " +
+      "the evidence behind it, and what would change the verdict — not just a list of matches. " +
+      "STOP means a high-tier construct (arbitrary code execution, shell injection): fix it, or " +
+      "pass a justification you can defend. REVISE means an exploitable sink (XSS, TLS, crypto " +
+      "mode): show the value is never untrusted or apply the fix. Use this instead of " +
+      "security_scan when you want a decision rather than a warning list.",
+    parameters: z.object({
+      content: z.string().min(1).describe("The code/content about to be written."),
+      path: z.string().optional().describe("Destination path; drives per-extension rules and appears in the verdict."),
+      justification: z
+        .string()
+        .optional()
+        .describe(
+          "Why this construct is safe here (e.g. 'input is a fixed internal enum'). Turns a STOP into " +
+            "PROCEED_DOCUMENTED; the finding stays in the verdict and should live in a code comment.",
+        ),
+    }),
+    async execute({ content, path, justification }) {
+      return renderVerdict(gate(path || "", content, justification ? { justification } : {}));
     },
   });
 

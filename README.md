@@ -1,20 +1,38 @@
 # bb-plugin-security-guidance
 
-Pattern-matched security warnings for code the agent writes. Port of the
-Hermes `security-guidance` plugin to BB's plugin model.
+Pattern-matched security warnings for code the agent writes, behind an
+episteme-shaped verdict. Port of the Hermes `security-guidance` plugin to BB's
+plugin model.
 
 BB has no `transform_tool_result` hook (the Hermes plugin's delivery
-mechanism), so this port exposes the same 25-rule pattern engine as a native
-agent tool instead:
+mechanism), so this port exposes the same 25-rule pattern engine as native
+agent tools instead:
 
-- **`security_scan`** — scan content (and an optional path) for known
-  dangerous code patterns. Returns a warning block for every match. The
-  agent calls this on content it is about to write, reads the warnings, and
-  either fixes the code or briefly documents why the construct is safe.
+- **`gate_check`** — judge content before it is written. Returns **STOP**,
+  **REVISE**, **PROCEED** or **PROCEED_DOCUMENTED**, with a certainty, the
+  evidence, and the counterfactual: what would change the verdict. High-tier
+  findings (arbitrary code execution, shell injection) stop; exploitable sinks
+  (XSS, TLS, crypto mode) ask for a revision; advisory findings pass with a
+  note. A `justification` turns a STOP into PROCEED_DOCUMENTED without hiding
+  the finding.
+- **`security_scan`** — the raw scan. Returns a warning block for every match.
+  The agent calls this on content it is about to write, reads the warnings,
+  and either fixes the code or briefly documents why the construct is safe.
 
-Same warn-by-default philosophy as the Hermes original: the scan is
-advisory, not blocking. Pattern matching has a non-trivial false-positive
-rate, so the tool returns warnings rather than refusing anything.
+## The verdict model
+
+Each of the 25 rules carries a tier and a fix in `gate.ts`; an unranked rule
+fails closed, and a test proves every rule is ranked. Certainty is per-rule:
+a literal match (`pickle.load`, `shell=True`) is high, while a rule that has
+to read a call's arguments (`yaml.load`, `torch.load`, `numpy.load`, `eval`)
+reports medium, because its danger depends on those arguments.
+
+A gate that cannot refuse has to be honest about it: BB gives plugins no
+pre-tool-call hook, so `gate_check` is a decision the agent is asked to
+obtain and honour, not enforcement. Every verdict says so.
+
+Same warn-by-default philosophy as the Hermes original: pattern matching has
+a non-trivial false-positive rate, so the tools inform rather than refuse.
 
 ## Coverage (25 rules)
 
